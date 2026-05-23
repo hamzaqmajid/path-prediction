@@ -1,0 +1,11 @@
+setup.py
+gnn_vs_transformers.egg-info/PKG-INFO
+gnn_vs_transformers.egg-info/SOURCES.txt
+gnn_vs_transformers.egg-info/dependency_links.txt
+gnn_vs_transformers.egg-info/top_level.txt
+notebooks/01_load_graph.py
+notebooks/02_test_loader.py
+notebooks/03_generate_trajectories.py
+notebooks/__init__.py
+src/__init__.py
+src/data_loader.py
