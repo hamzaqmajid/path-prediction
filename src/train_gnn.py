@@ -18,7 +18,7 @@ input_dim = x.shape[1]
 # -----------------------
 # Generate data
 # -----------------------
-trajectories = generate_trajectories(G, node_map, num_traj=2000, walk_length=8)
+trajectories = generate_trajectories(G, node_map)
 inputs, targets = build_sequence_dataset(trajectories)
 
 # -----------------------
@@ -33,7 +33,7 @@ loss_fn = nn.CrossEntropyLoss()
 # -----------------------
 # Training loop
 # -----------------------
-for epoch in range(50):
+for epoch in range(10):
     total_loss = 0
 
     for inp, target in zip(inputs, targets):

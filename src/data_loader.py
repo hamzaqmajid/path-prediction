@@ -66,13 +66,37 @@ def generate_random_trajectory(G, node_id_map, walk_length=10):
     return trajectory
 
 
-def generate_trajectories(G, node_id_map, num_traj=1000, walk_length=10):
+def generate_trajectories(G, node_map, num_traj=5000, length=8):
     trajectories = []
+    nodes = list(G.nodes())
 
     for _ in range(num_traj):
-        traj = generate_random_trajectory(G, node_id_map, walk_length)
-        
-        if len(traj) == walk_length:
-            trajectories.append(traj)
+        start = np.random.choice(nodes)
+        traj = random_walk(G, start, length)
+
+        # convert OSM IDs → 0..N indices
+        traj = [node_map[n] for n in traj]
+
+        trajectories.append(traj)
 
     return trajectories
+
+
+def random_walk(G, start, length=8):
+    walk = [start]
+
+    for _ in range(length - 1):
+        neighbors = list(G.neighbors(walk[-1]))
+
+        # prevent immediate backtracking
+        if len(walk) > 1:
+            prev = walk[-2]
+            neighbors = [n for n in neighbors if n != prev]
+
+        if not neighbors:
+            break
+
+        next_node = np.random.choice(neighbors)
+        walk.append(next_node)
+
+    return walk
