@@ -38,20 +38,29 @@ def compute_accuracy(output, y):
     total = y.size(0)
     return correct / total
 
+def compute_confusion_matrix_from_lists(preds, targets):
+    return confusion_matrix(targets, preds)
+
 def compute_confusion_matrix(output, y, num_classes=50):
     preds = torch.argmax(output, dim=1).cpu().numpy()
     y_true = y.cpu().numpy()
 
-    # take subset of classes to keep it small
     mask = y_true < num_classes
 
+    if mask.sum() == 0:
+        print("Warning: No samples match the mask. Returning empty matrix.")
+        return None
+
     cm = confusion_matrix(y_true[mask], preds[mask])
-
     return cm
-
 # -----------------------
 # Training loop
 # -----------------------
+
+all_preds = []
+all_targets = []
+
+
 for epoch in range(10):
     total_loss = 0
 
@@ -75,8 +84,13 @@ for epoch in range(10):
         optimizer.step()
 
         total_loss += loss.item()
-        print(f"Epoch {epoch+1}, Loss: {loss.item():.4f}, Accuracy: {acc:.4f}")
+        all_preds.append(torch.argmax(pred).item())
+        all_targets.append(target)
+        epoch_acc = sum(
+            1 for p, t in zip(all_preds, all_targets) if p == t
+        ) / len(all_targets)
 
-    cm = compute_confusion_matrix(pred, target_tensor)
-    print("\nConfusion Matrix (partial):")
-    print(cm)
+        print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}, Accuracy: {epoch_acc:.4f}")
+cm = compute_confusion_matrix_from_lists(all_preds, all_targets)
+print("\nConfusion Matrix (partial):")
+print(cm)

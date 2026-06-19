@@ -82,21 +82,19 @@ def generate_trajectories(G, node_map, num_traj=5000, length=8):
     return trajectories
 
 
-def random_walk(G, start, length=8):
+def random_walk(graph, start, length=8):
     walk = [start]
 
     for _ in range(length - 1):
-        neighbors = list(G.neighbors(walk[-1]))
+        neighbors = list(graph.neighbors(walk[-1]))
 
-        # prevent immediate backtracking
-        if len(walk) > 1:
-            prev = walk[-2]
-            neighbors = [n for n in neighbors if n != prev]
-
-        if not neighbors:
+        if len(neighbors) == 0:
             break
 
-        next_node = np.random.choice(neighbors)
+        # bias: prefer staying near recent direction
+        probs = np.ones(len(neighbors)) / len(neighbors)
+
+        next_node = np.random.choice(neighbors, p=probs)
         walk.append(next_node)
 
     return walk

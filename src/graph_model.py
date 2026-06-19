@@ -6,22 +6,23 @@ from torch_geometric.nn import SAGEConv
 
 class GraphSAGEModel(nn.Module):
     def __init__(self, input_dim, hidden_dim, num_nodes):
-        super(GraphSAGEModel, self).__init__()
+        super().__init__()
 
         self.conv1 = SAGEConv(input_dim, hidden_dim)
         self.conv2 = SAGEConv(hidden_dim, hidden_dim)
 
+        # classifier head (ONLY for GNN baseline)
         self.classifier = nn.Linear(hidden_dim, num_nodes)
 
-    def forward(self, x, edge_index):
-        # Step 1: message passing
+    # MODE 1: embeddings (for transformer)
+    def forward_embeddings(self, x, edge_index):
         x = self.conv1(x, edge_index)
-        x = F.relu(x)
-
+        x = torch.relu(x)
         x = self.conv2(x, edge_index)
-        x = F.relu(x)
+        return x  # (N, 64)
 
-        # Step 2: predict next node logits
-        out = self.classifier(x)
-
-        return out
+    #  MODE 2: classification (for standalone GNN)
+    def forward(self, x, edge_index):
+        x = self.forward_embeddings(x, edge_index)
+        x = self.classifier(x)
+        return x  # (N, num_nodes)
