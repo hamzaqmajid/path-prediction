@@ -1,100 +1,89 @@
 import osmnx as ox
-import networkx as nx
 import numpy as np
 import torch
 import random
-
-
+ 
+ 
 def load_graph(place_name="Cottbus, Germany"):
     G = ox.graph_from_place(place_name, network_type='drive')
     return G
-
-
+ 
+ 
 def build_graph_data(G):
-    # Step 1: Map node IDs → indices
+    # Map OSM node IDs → contiguous indices 0..N-1
     nodes = list(G.nodes())
     node_id_map = {node: i for i, node in enumerate(nodes)}
-
-    # Step 2: Node features (lat, lon, degree)
+ 
+    # Node features: (lat, lon, degree)
     features = []
-
     for node in nodes:
         lat = G.nodes[node]['y']
         lon = G.nodes[node]['x']
         degree = G.degree[node]
-
         features.append([lat, lon, degree])
-
+ 
     x = torch.tensor(features, dtype=torch.float)
-
-    # Step 3: Build edge index
+ 
+    # Edge index — add both directions so message passing is bidirectional
     edges = []
-
     for u, v in G.edges():
         edges.append([node_id_map[u], node_id_map[v]])
-        edges.append([node_id_map[v], node_id_map[u]])  # undirected
-
+        edges.append([node_id_map[v], node_id_map[u]])
+ 
     edge_index = torch.tensor(edges, dtype=torch.long).t().contiguous()
-
+ 
     return x, edge_index, node_id_map
-
-
-def generate_random_trajectory(G, node_id_map, walk_length=10):
-    nodes = list(G.nodes())
-
-    current = random.choice(nodes)
-    trajectory = [node_id_map[current]]
-    prev = None
-
-    for _ in range(walk_length - 1):
-        neighbors = list(G.neighbors(current))
-
-        # remove going back immediately (key fix)
-        if prev is not None and prev in neighbors:
-            neighbors.remove(prev)
-
-        if len(neighbors) == 0:
-            break
-
-        next_node = random.choice(neighbors)
-
-        trajectory.append(node_id_map[next_node])
-
-        prev = current
-        current = next_node
-
-    return trajectory
-
-
-def generate_trajectories(G, node_map, num_traj=5000, length=8):
-    trajectories = []
-    nodes = list(G.nodes())
-
-    for _ in range(num_traj):
-        start = np.random.choice(nodes)
-        traj = random_walk(G, start, length)
-
-        # convert OSM IDs → 0..N indices
-        traj = [node_map[n] for n in traj]
-
-        trajectories.append(traj)
-
-    return trajectories
-
-
-def random_walk(graph, start, length=8):
+ 
+ 
+def random_walk(G, start, length=8):
     walk = [start]
-
+    prev = None
+ 
     for _ in range(length - 1):
-        neighbors = list(graph.neighbors(walk[-1]))
-
-        if len(neighbors) == 0:
-            break
-
-        # bias: prefer staying near recent direction
-        probs = np.ones(len(neighbors)) / len(neighbors)
-
-        next_node = np.random.choice(neighbors, p=probs)
+        current = walk[-1]
+        neighbors = list(G.neighbors(current))
+ 
+        if not neighbors:
+            break  # dead-end node — stop early
+ 
+        # Anti-backtracking: exclude the previous node if alternatives exist
+        forward_neighbors = [n for n in neighbors if n != prev]
+        candidates = forward_neighbors if forward_neighbors else neighbors
+ 
+        next_node = random.choice(candidates)
         walk.append(next_node)
-
+        prev = current
+ 
     return walk
+ 
+ 
+def generate_trajectories(G, node_map, num_traj=5000, length=8):
+    nodes = list(G.nodes())
+    trajectories = []
+ 
+    for _ in range(num_traj):
+        start = random.choice(nodes)            # uniform start node
+        traj = random_walk(G, start, length)    # OSM IDs
+        traj = [node_map[n] for n in traj]      # → contiguous indices
+        trajectories.append(traj)
+ 
+    return trajectories
+ 
+ 
+def train_val_test_split(trajectories, val_ratio=0.1, test_ratio=0.1, seed=42):
+    """ 
+    Default: 80 % train, 10 % val, 10 % test.
+    """
+    rng = random.Random(seed)
+    data = trajectories[:]
+    rng.shuffle(data)
+ 
+    n = len(data)
+    n_test = int(n * test_ratio)
+    n_val  = int(n * val_ratio)
+ 
+    test  = data[:n_test]
+    val   = data[n_test: n_test + n_val]
+    train = data[n_test + n_val:]
+ 
+    return train, val, test

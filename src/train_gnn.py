@@ -1,96 +1,134 @@
+"""
+train_gnn.py — GraphSAGE baseline, neighbour-constrained next-node prediction.
+
+Task
+────
+Given the last node in a trajectory window, predict which of its road-network
+neighbours is visited next.  Output space = local degree (2–4 options), not
+all 2 128 nodes.  Random baseline Top-1 ≈ 30–40 %.
+"""
+
+import os
+import csv
 import torch
 import torch.nn as nn
 import torch.optim as optim
 
-from src.data_loader import load_graph, build_graph_data, generate_trajectories
-from src.dataset import build_sequence_dataset
+from src.data_loader import load_graph, build_graph_data, generate_trajectories, train_val_test_split
+from src.dataset import build_neighbour_dataset
 from src.graph_model import GraphSAGEModel
 
-from sklearn.metrics import confusion_matrix
 
-# -----------------------
-# Load graph
-# -----------------------
-G = load_graph("Cottbus, Germany")
-x, edge_index, node_map = build_graph_data(G)
+# ── Hyperparameters ───────────────────────────────────────────────────────────
 
-num_nodes = x.shape[0]
-input_dim = x.shape[1]
-
-# -----------------------
-# Generate data
-# -----------------------
-trajectories = generate_trajectories(G, node_map)
-inputs, targets = build_sequence_dataset(trajectories)
-
-# -----------------------
-# Model
-# -----------------------
-device = torch.device("cpu")
-model = GraphSAGEModel(input_dim, hidden_dim=64, num_nodes=num_nodes).to(device)
-
-optimizer = optim.Adam(model.parameters(), lr=0.01)
-loss_fn = nn.CrossEntropyLoss()
-
-def compute_accuracy(output, y):
-    preds = torch.argmax(output, dim=1)
-    correct = (preds == y).sum().item()
-    total = y.size(0)
-    return correct / total
-
-def compute_confusion_matrix_from_lists(preds, targets):
-    return confusion_matrix(targets, preds)
-
-def compute_confusion_matrix(output, y, num_classes=50):
-    preds = torch.argmax(output, dim=1).cpu().numpy()
-    y_true = y.cpu().numpy()
-
-    mask = y_true < num_classes
-
-    if mask.sum() == 0:
-        print("Warning: No samples match the mask. Returning empty matrix.")
-        return None
-
-    cm = confusion_matrix(y_true[mask], preds[mask])
-    return cm
-# -----------------------
-# Training loop
-# -----------------------
-
-all_preds = []
-all_targets = []
+PLACE       = "Cottbus, Germany"
+NUM_TRAJ    = 5000
+WALK_LENGTH = 8
+SEQ_LEN     = 5
+MAX_DEGREE  = 8
+HIDDEN_DIM  = 64
+EPOCHS      = 20
+LR          = 0.001
+RESULTS_DIR = "results"
 
 
-for epoch in range(10):
-    total_loss = 0
+# ── Metrics ───────────────────────────────────────────────────────────────────
 
-    for inp, target in zip(inputs, targets):
+def topk_accuracy(logits, targets, k):
+    """Top-k accuracy over local candidate list (max_degree classes)."""
+    k = min(k, logits.size(1))
+    _, top_idx = torch.topk(logits, k, dim=1)
+    correct = top_idx.eq(targets.unsqueeze(1)).any(dim=1)
+    return correct.float().mean().item()
 
-        inp_node = inp[-1]  # last visited node = current state
 
-        x_device = x.to(device)
-        edge_device = edge_index.to(device)
+def random_baseline(valid_masks):
+    """Expected Top-1 accuracy of a uniform random policy."""
+    degrees = valid_masks.sum(dim=1).float()
+    return (1.0 / degrees).mean().item()
 
-        out = model(x_device, edge_device)
 
-        pred = out[inp_node].unsqueeze(0)  # prediction for current node
-        target_tensor = torch.tensor([target], device=device)
+# ── Main ──────────────────────────────────────────────────────────────────────
 
-        loss = loss_fn(pred, target_tensor)
-        acc = compute_accuracy(pred, target_tensor)
+def train():
+    os.makedirs(RESULTS_DIR, exist_ok=True)
+    device = torch.device("cpu")
+
+    # ── Graph ─────────────────────────────────────────────────────────────────
+    print("Loading graph ...")
+    G = load_graph(PLACE)
+    x, edge_index, node_map = build_graph_data(G)
+
+    num_nodes = x.size(0)
+    input_dim = x.size(1)
+    print(f"  Nodes: {num_nodes}  |  Input dim: {input_dim}")
+
+    x          = x.to(device)
+    edge_index = edge_index.to(device)
+
+    # ── Data ──────────────────────────────────────────────────────────────────
+    print("Generating trajectories ...")
+    all_traj = generate_trajectories(G, node_map, num_traj=NUM_TRAJ, length=WALK_LENGTH)
+    train_traj, val_traj, _ = train_val_test_split(all_traj)
+
+    print("Building neighbour datasets ...")
+    tr_seqs, tr_cands, tr_targets, tr_masks = build_neighbour_dataset(
+        train_traj, G, node_map, seq_len=SEQ_LEN, max_degree=MAX_DEGREE)
+    va_seqs, va_cands, va_targets, va_masks = build_neighbour_dataset(
+        val_traj,   G, node_map, seq_len=SEQ_LEN, max_degree=MAX_DEGREE)
+
+    tr_seqs    = tr_seqs.to(device);    tr_cands   = tr_cands.to(device)
+    tr_targets = tr_targets.to(device); tr_masks   = tr_masks.to(device)
+    va_seqs    = va_seqs.to(device);    va_cands   = va_cands.to(device)
+    va_targets = va_targets.to(device); va_masks   = va_masks.to(device)
+
+    rand_base = random_baseline(tr_masks)
+    print(f"  Train samples         : {len(tr_seqs)}")
+    print(f"  Val   samples         : {len(va_seqs)}")
+    print(f"  Random Top-1 baseline : {rand_base:.4f}")
+
+    # ── Model ─────────────────────────────────────────────────────────────────
+    model     = GraphSAGEModel(input_dim, HIDDEN_DIM, num_nodes, MAX_DEGREE).to(device)
+    optimizer = optim.Adam(model.parameters(), lr=LR)
+    criterion = nn.CrossEntropyLoss()
+
+    # ── Training loop ─────────────────────────────────────────────────────────
+    rows = [["epoch", "train_loss", "train_top1", "train_top3",
+             "val_top1", "val_top3", "random_baseline"]]
+
+    for epoch in range(1, EPOCHS + 1):
+        model.train()
+
+        logits = model(x, edge_index, tr_seqs, tr_cands, tr_masks)
+        loss   = criterion(logits, tr_targets)
 
         optimizer.zero_grad()
         loss.backward()
+        torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
         optimizer.step()
 
-        total_loss += loss.item()
-        all_preds.append(torch.argmax(pred).item())
-        all_targets.append(target)
-        epoch_acc = sum(
-            1 for p, t in zip(all_preds, all_targets) if p == t
-        ) / len(all_targets)
+        tr_top1 = topk_accuracy(logits.detach(), tr_targets, k=1)
+        tr_top3 = topk_accuracy(logits.detach(), tr_targets, k=3)
 
-        print(f"Epoch {epoch+1}, Loss: {total_loss:.4f}, Accuracy: {epoch_acc:.4f}")
-cm = compute_confusion_matrix_from_lists(all_preds, all_targets)
-print("\nConfusion Matrix (partial):")
-print(cm)
+        model.eval()
+        with torch.no_grad():
+            va_logits = model(x, edge_index, va_seqs, va_cands, va_masks)
+            va_top1   = topk_accuracy(va_logits, va_targets, k=1)
+            va_top3   = topk_accuracy(va_logits, va_targets, k=3)
+
+        print(
+            f"Epoch {epoch:>2}/{EPOCHS} | Loss: {loss.item():.4f} | "
+            f"Train Top-1: {tr_top1:.4f}  Top-3: {tr_top3:.4f} | "
+            f"Val Top-1: {va_top1:.4f}  Top-3: {va_top3:.4f} | "
+            f"Random: {rand_base:.4f}"
+        )
+        rows.append([epoch, loss.item(), tr_top1, tr_top3, va_top1, va_top3, rand_base])
+
+    csv_path = os.path.join(RESULTS_DIR, "gnn_metrics.csv")
+    with open(csv_path, "w", newline="") as f:
+        csv.writer(f).writerows(rows)
+    print(f"\nMetrics saved to {csv_path}")
+
+
+if __name__ == "__main__":
+    train()
