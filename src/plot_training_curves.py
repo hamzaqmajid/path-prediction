@@ -1,5 +1,5 @@
 """
-plot_training_curves.py — Training curve figure for thesis.
+plot_training_curves.py — Training curve figure.
 
 Reads results/gnn_metrics.csv and results/transformer_metrics.csv and
 produces a single publication-quality figure with:
